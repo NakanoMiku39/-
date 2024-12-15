@@ -370,10 +370,3 @@ class GuanDanEnv():
                 if self.cardscale.index(point2[0]) > self.cardscale.index(point1[0]):
                     return True
         return False
-
-if __name__ == '__main__':
-    gd = GuanDanEnv()
-    for i in range(100):
-        gd.reset()
-        print("Stepped")
-        gd.step(gd.lastMove)
