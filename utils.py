@@ -8,6 +8,9 @@ class Utils():
         self.cardscale = ['A','2','3','4','5','6','7','8','9','0','J','Q','K']
         self.suitset = ['h','d','s','c']
         self.jokers = ['jo', 'jO']
+        
+        self.chineseCardscale = ['A','2','3','4','5','6','7','8','9','10','J','Q','K']
+        self.chineseSuitset = ['红心','方块','黑桃','草花']
     
     def Num2Poker(self, num: int):
         num_in_deck = num % 54
@@ -18,6 +21,17 @@ class Utils():
         # Normal cards:
         pokernumber = self.cardscale[num_in_deck // 4]
         pokersuit = self.suitset[num_in_deck % 4]
+        return pokersuit + pokernumber
+    
+    def ChineseNum2Poker(self, num: int):
+        num_in_deck = num % 54
+        if num_in_deck == 52:
+            return "小王"
+        if num_in_deck == 53:
+            return "大王"
+        # Normal cards:
+        pokernumber = self.chineseCardscale[num_in_deck // 4]
+        pokersuit = self.chineseSuitset[num_in_deck % 4]
         return pokersuit + pokernumber
     
     def Poker2Num(self, poker: str, deck):
