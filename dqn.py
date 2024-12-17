@@ -17,7 +17,7 @@ LR = 1e-3
 BATCH_SIZE = 256
 MEMORY_SIZE = 20000
 TARGET_UPDATE = 10
-EPISODES = 20000
+EPISODES = 200000
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 utils = Utils()
 # DEVICE = torch.device("cpu")
@@ -29,28 +29,6 @@ print(torch.cuda.current_device())  # 获取当前 GPU 设备编号
 print(torch.cuda.get_device_name(0))  # 查看 GPU 的名称（如果存在）
 print(torch.__version__)
 print(torch.version.cuda)
-
-def encode_low_level_state(hand, action_space=5):
-    """
-    将手牌和高层决策编码为底层网络的输入。
-
-    Args:
-        hand (list): 玩家手牌，包含牌的编号。
-        high_level_action (int): 高层决策的动作索引。
-        action_space (int): 高层决策的总数。
-
-    Returns:
-        np.array: 编码后的状态向量。
-    """
-    # 编码手牌
-    hand_encoded = np.zeros(108, dtype=np.float32)
-    for card in hand:
-        hand_encoded[card] = 1
-
-    # 编码高层决策（one-hot编码）
-    high_level_action_encoded = np.zeros(action_space, dtype=np.float32)
-
-    return hand_encoded
     
 # DQN Network
 class HighLevelDQN(nn.Module):
@@ -126,7 +104,8 @@ class HierarchicalDQNAgent:
 
         # 根据高层决策选择相应数量的牌
         if high_level_action == 0:  # 单张
-            return [hand_q_values[0][0]] if hand_q_values else []
+            # print(f"单张Hand Q-Values: {hand_q_values}")
+            return [hand_q_values[0][0]]
         elif high_level_action == 1:  # 对子
             for i in range(len(hand_q_values) - 1):
                 if hand_q_values[i][0] // 4 == hand_q_values[i + 1][0] // 4:
@@ -137,6 +116,7 @@ class HierarchicalDQNAgent:
                     hand_q_values[i + 2][0] // 4):
                     return [hand_q_values[i][0], hand_q_values[i + 1][0], hand_q_values[i + 2][0]]
         elif high_level_action == 3:  # 炸弹
+            # print(f"炸弹Hand Q-Values: {hand_q_values}")
             for i in range(len(hand_q_values) - 3):
                 if (hand_q_values[i][0] // 4 == hand_q_values[i + 1][0] // 4 ==
                     hand_q_values[i + 2][0] // 4 == hand_q_values[i + 3][0] // 4):
@@ -161,43 +141,68 @@ class HierarchicalDQNAgent:
         states, actions, rewards, next_states, dones = zip(*batch)
 
         # 解包高层和低层动作
-        high_level_actions, low_level_actions = zip(*actions)
+        high_level_actions, low_level_actions = zip(*actions)   
             
-        # 空过是-1    
-        low_level_actions = [action if isinstance(action, int) and action >= 0 else -1 for action in low_level_actions]
+        low_level_actions_one_hot = []
+        utils.Action2Onehot(low_level_actions, low_level_actions_one_hot)
+        # for action in low_level_actions:
+        #     one_hot = np.zeros(108, dtype=np.float32)
+        #     if action and action[0] != -1:
+        #         for card in action:
+        #             one_hot[card] = 1
+        #     low_level_actions_one_hot.append(one_hot)
 
+        # 转换为 PyTorch 张量
+        low_level_actions_one_hot = torch.FloatTensor(low_level_actions_one_hot).to(DEVICE)
+        # 使用 pad_sequence 对 low_level_actions 进行填充
 
+        # print(f"High Level Actions: {high_level_actions}")
+        # print(f"Low Level Actions: {low_level_actions}")
+        # print(f"Low Level Actions One Hot: {low_level_actions_one_hot}")
+        
         states = torch.FloatTensor(np.array(states)).to(DEVICE)
         high_level_actions = torch.LongTensor(high_level_actions).unsqueeze(1).to(DEVICE)
-        low_level_actions = torch.LongTensor(low_level_actions).unsqueeze(1).to(DEVICE)
+        # low_level_actions = torch.LongTensor(low_level_actions).unsqueeze(1).to(DEVICE)
         rewards = torch.FloatTensor(rewards).unsqueeze(1).to(DEVICE)
         next_states = torch.FloatTensor(np.array(next_states)).to(DEVICE)
         dones = torch.FloatTensor(dones).unsqueeze(1).to(DEVICE)
 
         # 更新低层网络
-        self._update_low_level_network(states, low_level_actions, rewards, next_states, dones)
+        self._update_low_level_network(states, low_level_actions_one_hot, rewards, next_states, dones)
 
         # 更新高层网络
         self._update_high_level_network(states, high_level_actions, rewards, next_states, dones)
 
-    def _update_low_level_network(self, states, actions, rewards, next_states, dones):
-        valid_indices = (actions != -1).squeeze(1)
-        if valid_indices.any():
-            valid_states = states[valid_indices]
-            valid_actions = actions[valid_indices]
-            valid_rewards = rewards[valid_indices]
-            valid_next_states = next_states[valid_indices]
-            valid_dones = dones[valid_indices]
+    # def _update_low_level_network(self, states, actions, rewards, next_states, dones):
+    #     valid_indices = (actions != -1).all(dim=1)
+    #     if valid_indices.any():
+    #         valid_states = states[valid_indices]
+    #         valid_actions = actions[valid_indices]
+    #         valid_rewards = rewards[valid_indices]
+    #         valid_next_states = next_states[valid_indices]
+    #         valid_dones = dones[valid_indices]
 
-            q_values = self.low_level_net(valid_states).gather(1, valid_actions)
-            next_q_values = self.low_level_target_net(valid_next_states).max(1)[0].unsqueeze(1)
-            target_q_values = valid_rewards + GAMMA * next_q_values * (1 - valid_dones)
+    #         # 计算 Q 值
+    #         q_values = self.low_level_net(valid_states).gather(1, valid_actions[:, 0].unsqueeze(1))
+    #         next_q_values = self.low_level_target_net(valid_next_states).max(1)[0].unsqueeze(1)
+    #         target_q_values = valid_rewards + GAMMA * next_q_values * (1 - valid_dones)
 
-            loss = F.mse_loss(q_values, target_q_values)
+    #         loss = F.mse_loss(q_values, target_q_values)
 
-            self.low_level_optimizer.zero_grad(set_to_none=True)  # 清理梯度缓存
-            loss.backward()
-            self.low_level_optimizer.step()
+    #         self.low_level_optimizer.zero_grad(set_to_none=True)
+    #         loss.backward()
+    #         self.low_level_optimizer.step()
+    
+    def _update_low_level_network(self, states, actions_one_hot, rewards, next_states, dones):
+        q_values = (self.low_level_net(states) * actions_one_hot).sum(dim=1, keepdim=True)
+        next_q_values = self.low_level_target_net(next_states).max(1)[0].unsqueeze(1)
+        target_q_values = rewards + GAMMA * next_q_values * (1 - dones)
+
+        loss = F.mse_loss(q_values, target_q_values)
+
+        # self.low_level_optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        self.low_level_optimizer.step()
 
     def _update_high_level_network(self, states, actions, rewards, next_states, dones):
         q_values = self.high_level_net(states).gather(1, actions)
@@ -224,94 +229,94 @@ class ReplayMemory:
     def __len__(self):
         return len(self.memory)
     
-# 单张
-def get_legal_singles(player_hand):
-    return [[card] for card in player_hand]
+# # 单张
+# def get_legal_singles(player_hand):
+#     return [[card] for card in player_hand]
 
-# 对子
-def get_legal_pairs(player_hand):
-    pairs = []
-    for combo in combinations(player_hand, 2):
-        if combo[0] // 4 == combo[1] // 4:
-            pairs.append(list(combo))
-    return pairs
+# # 对子
+# def get_legal_pairs(player_hand):
+#     pairs = []
+#     for combo in combinations(player_hand, 2):
+#         if combo[0] // 4 == combo[1] // 4:
+#             pairs.append(list(combo))
+#     return pairs
 
-# 三连对（木板）
-def get_legal_triple_pairs(player_hand):
-    pairs = get_legal_pairs(player_hand)
-    triple_pairs = []
-    for combo in combinations(pairs, 3):
-        ranks = [card[0] // 4 for card in combo]
-        ranks.sort()
-        if ranks[1] == ranks[0] + 1 and ranks[2] == ranks[1] + 1:
-            triple_pairs.append(combo[0] + combo[1] + combo[2])
-    return triple_pairs
+# # 三连对（木板）
+# def get_legal_triple_pairs(player_hand):
+#     pairs = get_legal_pairs(player_hand)
+#     triple_pairs = []
+#     for combo in combinations(pairs, 3):
+#         ranks = [card[0] // 4 for card in combo]
+#         ranks.sort()
+#         if ranks[1] == ranks[0] + 1 and ranks[2] == ranks[1] + 1:
+#             triple_pairs.append(combo[0] + combo[1] + combo[2])
+#     return triple_pairs
 
-# 三同张
-def get_legal_triples(player_hand):
-    triples = []
-    for combo in combinations(player_hand, 3):
-        if combo[0] // 4 == combo[1] // 4 == combo[2] // 4:
-            triples.append(list(combo))
-    return triples
+# # 三同张
+# def get_legal_triples(player_hand):
+#     triples = []
+#     for combo in combinations(player_hand, 3):
+#         if combo[0] // 4 == combo[1] // 4 == combo[2] // 4:
+#             triples.append(list(combo))
+#     return triples
 
-# 三带二（夯）
-def get_legal_three_with_pair(player_hand):
-    triples = get_legal_triples(player_hand)
-    pairs = get_legal_pairs(player_hand)
-    three_with_pair = []
-    for triple in triples:
-        for pair in pairs:
-            if not set(triple) & set(pair):
-                three_with_pair.append(triple + pair)
-    return three_with_pair
+# # 三带二（夯）
+# def get_legal_three_with_pair(player_hand):
+#     triples = get_legal_triples(player_hand)
+#     pairs = get_legal_pairs(player_hand)
+#     three_with_pair = []
+#     for triple in triples:
+#         for pair in pairs:
+#             if not set(triple) & set(pair):
+#                 three_with_pair.append(triple + pair)
+#     return three_with_pair
 
-# 顺子（五张相连单牌）
-def get_legal_straights(player_hand):
-    ranks = [card // 4 for card in player_hand]
-    straights = []
-    for combo in combinations(ranks, 5):
-        sorted_combo = sorted(combo)
-        if sorted_combo == list(range(sorted_combo[0], sorted_combo[0] + 5)):
-            straight = [card for card in player_hand if card // 4 in sorted_combo]
-            if len(straight) == 5:
-                straights.append(straight)
-    return straights
+# # 顺子（五张相连单牌）
+# def get_legal_straights(player_hand):
+#     ranks = [card // 4 for card in player_hand]
+#     straights = []
+#     for combo in combinations(ranks, 5):
+#         sorted_combo = sorted(combo)
+#         if sorted_combo == list(range(sorted_combo[0], sorted_combo[0] + 5)):
+#             straight = [card for card in player_hand if card // 4 in sorted_combo]
+#             if len(straight) == 5:
+#                 straights.append(straight)
+#     return straights
 
-# 炸弹（四张或以上相同点数的牌）
-def get_legal_bombs(player_hand):
-    bombs = []
-    # 检查普通炸弹
-    for n in range(4, len(player_hand) + 1):
-        for combo in combinations(player_hand, n):
-            if all(card // 4 == combo[0] // 4 for card in combo):
-                bombs.append(list(combo))
+# # 炸弹（四张或以上相同点数的牌）
+# def get_legal_bombs(player_hand):
+#     bombs = []
+#     # 检查普通炸弹
+#     for n in range(4, len(player_hand) + 1):
+#         for combo in combinations(player_hand, n):
+#             if all(card // 4 == combo[0] // 4 for card in combo):
+#                 bombs.append(list(combo))
 
-    # 检查王炸（四个王）
-    joker_set = {52, 53, 106, 107}
-    if joker_set.issubset(set(player_hand)):
-        bombs.append([52, 53, 106, 107])
+#     # 检查王炸（四个王）
+#     joker_set = {52, 53, 106, 107}
+#     if joker_set.issubset(set(player_hand)):
+#         bombs.append([52, 53, 106, 107])
 
-    return bombs
+#     return bombs
 
 
-# 同花顺（五张相连且同花色的牌）
-def get_legal_straight_flushes(player_hand):
-    suits = {0: [], 1: [], 2: [], 3: []}
-    for card in player_hand:
-        suits[card % 4].append(card)
+# # 同花顺（五张相连且同花色的牌）
+# def get_legal_straight_flushes(player_hand):
+#     suits = {0: [], 1: [], 2: [], 3: []}
+#     for card in player_hand:
+#         suits[card % 4].append(card)
 
-    straight_flushes = []
-    for suit_cards in suits.values():
-        if len(suit_cards) >= 5:
-            ranks = [card // 4 for card in suit_cards]
-            for combo in combinations(ranks, 5):
-                sorted_combo = sorted(combo)
-                if sorted_combo == list(range(sorted_combo[0], sorted_combo[0] + 5)):
-                    straight_flush = [card for card in suit_cards if card // 4 in sorted_combo]
-                    if len(straight_flush) == 5:
-                        straight_flushes.append(straight_flush)
-    return straight_flushes
+#     straight_flushes = []
+#     for suit_cards in suits.values():
+#         if len(suit_cards) >= 5:
+#             ranks = [card // 4 for card in suit_cards]
+#             for combo in combinations(ranks, 5):
+#                 sorted_combo = sorted(combo)
+#                 if sorted_combo == list(range(sorted_combo[0], sorted_combo[0] + 5)):
+#                     straight_flush = [card for card in suit_cards if card // 4 in sorted_combo]
+#                     if len(straight_flush) == 5:
+#                         straight_flushes.append(straight_flush)
+#     return straight_flushes
 
 def encode_obs(obs):
     """
@@ -403,43 +408,27 @@ def train():
         done = False
         total_reward = 0
         current_player = 0
-        print(f"Episode {episode}")
+        # print(f"Episode {episode}")
         while not done:
             player_obs = obs[current_player]
             state = torch.FloatTensor(encode_obs(player_obs)).to(DEVICE)
             # Step 1: High-Level action selection (e.g., Single, Pair, Triple, Bomb, Pass)
             high_level_action = agent.select_high_level_action(state)
-            
-            # 根据 High-Level 动作生成 Low-Level 合法动作
-            # if high_level_action == 0:
-            #     legal_actions = get_legal_singles(player_obs['deck'])
-            # elif high_level_action == 1:
-            #     legal_actions = get_legal_pairs(player_obs['deck'])
-            # elif high_level_action == 2:
-            #     legal_actions = get_legal_triples(player_obs['deck'])
-            # elif high_level_action == 3:
-            #     legal_actions = get_legal_bombs(player_obs['deck'])
-            # elif high_level_action == 4:
-            #     legal_actions = get_legal_three_with_pair(player_obs['deck'])
-            # else:
-            #     legal_actions = [[]]  # Pass 动作
 
             # Step 2: Low-Level action selection
-            if high_level_action:
-                chosen_action = agent.select_low_level_action(state, player_obs['deck'], high_level_action)
+            if high_level_action in range(5):
+                low_level_action = agent.select_low_level_action(state, player_obs['deck'], high_level_action)
             else:
-                chosen_action = []
+                low_level_action = []
 
-
-            if episode % 1 == 0:
+            if episode % 1000 == 0:
                 print(f"Player {current_player}: {[card_mapping[i] for i in player_obs['deck']]}\n \
                       high level action: {high_level_action_space[high_level_action]}\n \
-                      low level action: {[card_mapping[i] for i in chosen_action]}")
+                      low level action: {[card_mapping[i] for i in low_level_action]}")
                 # print(f"Selected action index: {action}, Legal actions length: {len(legal_actions)}")
 
             # 执行选择的动作
-            response = {'player': current_player, 'action': chosen_action, 'claim': chosen_action}
-            # print(f"Current Player: {current_player}, player_hand: {player_hand}, action: {chosen_action}")
+            response = {'player': current_player, 'action': low_level_action, 'claim': low_level_action}
             # Step后下一个状态
             next_obs = env.step(response)
             # 当前玩家出牌后的reward
@@ -457,7 +446,7 @@ def train():
                 obs = next_obs
                 
             # 存储经验
-            low_level_action = chosen_action[0] if chosen_action else -1  # Use the first element or -1 for Pass
+            # print(f"low_level_action: {low_level_action}")
             agent.memory.push(state.cpu(), (high_level_action, low_level_action), reward, next_state.cpu(), done)
 
             # 更新网络
@@ -473,28 +462,34 @@ def train():
         # 记录损失值
         if len(agent.memory) >= BATCH_SIZE:
             states, actions, rewards, next_states, dones = zip(*agent.memory.sample(BATCH_SIZE))
+
+            # 将 low_level_actions 转换为独热编码
+            low_level_actions_one_hot = []
+            utils.Action2Onehot(actions, low_level_actions_one_hot)
+
+            # 转换为 PyTorch 张量
+            low_level_actions_one_hot = torch.FloatTensor(low_level_actions_one_hot).to(DEVICE)
+
             states = torch.FloatTensor(np.array(states)).to(DEVICE)
-            actions = torch.LongTensor(actions).unsqueeze(1).to(DEVICE)  # 添加 unsqueeze(1)
             rewards = torch.FloatTensor(rewards).unsqueeze(1).to(DEVICE)
             next_states = torch.FloatTensor(np.array(next_states)).to(DEVICE)
             dones = torch.FloatTensor(dones).unsqueeze(1).to(DEVICE)
 
-            # q_values = agent.low_level_net(states).gather(1, actions)
-            # next_q_values = agent.low_level_target_net(next_states).max(1)[0].unsqueeze(1)
-            # target_q_values = rewards + GAMMA * next_q_values * (1 - dones)
-            # loss = F.mse_loss(q_values, target_q_values)
-            # loss_history.append(loss.item())
+            # 计算 Q 值
+            q_values = (agent.low_level_net(states) * low_level_actions_one_hot).sum(dim=1, keepdim=True)
+            next_q_values = agent.low_level_target_net(next_states).max(1)[0].unsqueeze(1)
+            target_q_values = rewards + GAMMA * next_q_values * (1 - dones)
+
+            # 计算损失
+            loss = F.mse_loss(q_values, target_q_values)
+            loss_history.append(loss.item())
 
         if episode % TARGET_UPDATE == 0:
             agent.update_target_networks()
             
-        if episode % 1  == 0:
+        if episode % 1000  == 0:
             print(f"Episode {episode}, Total Reward: {total_reward}")
             print("---")
-            
-        # 清理内存和缓存
-        # torch.cuda.empty_cache()  # 如果使用 GPU
-        # gc.collect()
             
     # 绘制权重变化
     plot_training_curves(loss_history, reward_history, weight_history)

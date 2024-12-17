@@ -48,6 +48,14 @@ class Utils():
             return num_in_deck
         return num_in_deck + 54
     
+    def Action2Onehot(self, low_level_actions, low_level_actions_one_hot):
+        for action in low_level_actions:
+            one_hot = np.zeros(108, dtype=np.float32)
+            if action and action[0] != -1:
+                for card in action:
+                    one_hot[card] = 1
+            low_level_actions_one_hot.append(one_hot)
+    
 class Error(Exception):
     def __init__(self, ErrorInfo):
         self.ErrorInfo = ErrorInfo

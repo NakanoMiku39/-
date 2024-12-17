@@ -71,7 +71,7 @@ class GuanDanEnv():
         return self._get_obs(0) # Each match starts from the player on 0 position
         
     def step(self, response):
-        # prev_hand_sizes = {i: len(self.player_decks[i]) for i in range(4)}  # 记录每个玩家出牌前的手牌数量
+        prev_hand_sizes = {i: len(self.player_decks[i]) for i in range(4)}  # 记录每个玩家出牌前的手牌数量
         
         self.round += 1
         self.reward = None
@@ -122,7 +122,7 @@ class GuanDanEnv():
                 self.game_state_info = "Finished"
             self.pass_on = curr_player
             
-        self._set_reward()
+        self._set_reward(prev_hand_sizes)
         
         if not self.done:
             next_player = (curr_player + 1) % 4
@@ -152,7 +152,7 @@ class GuanDanEnv():
         return self._get_obs(-1) # Done. Send a signal to all players     
         
     
-    def _set_reward(self):
+    def _set_reward(self, prev_hand_sizes):
         '''
         setting rewards
         if terminating: winner team gets reward 1~3
@@ -166,9 +166,9 @@ class GuanDanEnv():
         }
         
         # 出牌奖励：如果手牌数量减少，给予正向奖励
-        # for player in range(4):
-        #     if len(self.player_decks[player]) < prev_hand_sizes[player]:
-        #         self.reward[player] += 0.1  # 手牌减少，给予小的奖励
+        for player in range(4):
+            if len(self.player_decks[player]) < prev_hand_sizes[player]:
+                self.reward[player] += 0.05  # 手牌减少，给予小的奖励
             
         if self.done:
             if len(self.cleared) == 2: # Must be a double-dweller
