@@ -337,7 +337,7 @@ class GuanDanEnv():
                     return "triple_pairs", (ks[0])
             return "invalid", ()
         if len(poker) > 6 and len(poker) <= 10:
-            if vals.cnt(len(poker)) == 1:
+            if vals.count(len(poker)) == 1:
                 bomb = points[0]
                 return "bomb", (len(poker), bomb)
         return "invalid", ()

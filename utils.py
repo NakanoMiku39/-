@@ -59,6 +59,13 @@ class Utils():
                     one_hot[card] = 1
             low_level_actions_one_hot.append(one_hot)
             
+    def get_card_rank(self, card):
+        # 将第二副牌的点数映射回第一副牌的范围
+        if card >= 54:
+            return (card - 54) // 4
+        else:
+            return card // 4
+
     # 单张
     def get_legal_singles(self, hand):
         # return [[card] for card in hand]
@@ -66,23 +73,23 @@ class Utils():
 
     def get_legal_pairs(self, hand, callFromSelf):
         pairs = []
-        jokers = [52, 53, 106, 107]
+        small_jokers = [j for j in hand if j in [52, 106]]
+        big_jokers = [j for j in hand if j in [53, 107]]
 
         # 查找普通对子
         for combo in combinations(hand, 2):
-            if combo[0] // 4 == combo[1] // 4:
+            if self.get_card_rank(combo[0]) == self.get_card_rank(combo[1]):
                 if not callFromSelf:
                     return list(combo)
                 pairs.append(list(combo))
 
-        # 特殊处理两个小王或两个大王作为对子
-        small_jokers = [j for j in hand if j in [52, 106]]
+        # 特殊处理两个小王作为对子
         if len(small_jokers) >= 2:
             if not callFromSelf:
                 return [small_jokers[0], small_jokers[1]]
             pairs.append([small_jokers[0], small_jokers[1]])
 
-        big_jokers = [j for j in hand if j in [53, 107]]
+        # 特殊处理两个大王作为对子
         if len(big_jokers) >= 2:
             if not callFromSelf:
                 return [big_jokers[0], big_jokers[1]]
@@ -94,26 +101,23 @@ class Utils():
     def get_legal_triples(self, hand, callFromSelf):
         triples = []
         for combo in combinations(hand, 3):
-            # 确保三张牌的点数相同，并且不包含大小王
-            if (combo[0] // 4 == combo[1] // 4 == combo[2] // 4 and
+            if (self.get_card_rank(combo[0]) == self.get_card_rank(combo[1]) == self.get_card_rank(combo[2]) and
                 all(card not in [52, 53, 106, 107] for card in combo)):
                 if not callFromSelf:
                     return list(combo)
                 triples.append(list(combo))
         return triples
 
+
     # 炸弹（四张或以上相同点数的牌）
     def get_legal_bombs(self, hand):
         bombs = []
+        rank_counts = Counter(self.get_card_rank(card) for card in hand if card not in [52, 53, 106, 107])
 
-        # 统计每个点数的出现次数（不包括大小王）
-        rank_counts = Counter(card // 4 for card in hand if card not in [52, 53, 106, 107])
-
-        # 查找四张或以上相同点数的牌
         for rank, count in rank_counts.items():
             if count >= 4:
-                bomb = [card for card in hand if card // 4 == rank]
-                # bombs.append(bomb[:count])  # 取前 count 张牌
+                bomb = [card for card in hand if self.get_card_rank(card) == rank]
+                # bombs.append(bomb[:count])
                 return bomb[:count]
 
         return bombs
@@ -122,24 +126,22 @@ class Utils():
         # 获取普通对子，不包含大小王
         jokers = [52, 53, 106, 107]
         pairs = []
-        
+
         for combo in combinations(hand, 2):
-            if combo[0] // 4 == combo[1] // 4 and combo[0] not in jokers and combo[1] not in jokers:
+            if self.get_card_rank(combo[0]) == self.get_card_rank(combo[1]) and combo[0] not in jokers and combo[1] not in jokers:
                 pairs.append(list(combo))
-        
+
         return pairs
 
     # 三连对（木板）
     def get_legal_triple_pairs(self, hand):
         pairs = self.get_legal_pairs_without_jokers(hand)
-        triple_pairs = []
         for combo in combinations(pairs, 3):
-            ranks = [pair[0] // 4 for pair in combo]
+            ranks = [self.get_card_rank(pair[0]) for pair in combo]
             ranks.sort()
             if ranks[1] == ranks[0] + 1 and ranks[2] == ranks[1] + 1:
-                # triple_pairs.append(combo[0] + combo[1] + combo[2])
                 return combo[0] + combo[1] + combo[2]
-        return triple_pairs
+        return []
 
     # 三带二（夯）
     def get_legal_three_with_pair(self, hand):
@@ -158,36 +160,36 @@ class Utils():
         straights = []
         # 过滤掉大小王
         filtered_hand = [card for card in hand if card not in [52, 53, 106, 107]]
-        ranks = [card // 4 for card in filtered_hand]
+        ranks = sorted(set(self.get_card_rank(card) for card in filtered_hand))
 
-        for combo in combinations(ranks, 5):
-            sorted_combo = sorted(combo)
-            if sorted_combo == list(range(sorted_combo[0], sorted_combo[0] + 5)):
-                straight = [card for card in filtered_hand if card // 4 in sorted_combo]
+        # 连续检查，而非生成所有组合
+        for i in range(len(ranks) - 4):
+            if ranks[i + 4] == ranks[i] + 4:
+                straight = [card for card in filtered_hand if self.get_card_rank(card) in ranks[i:i + 5]]
                 if len(straight) == 5:
-                    # straights.append(straight)
                     return straight
         return straights
 
     # 同花顺（五张相连且同花色的牌）
     def get_legal_straight_flushes(self, hand):
-        straight_flushes = []
         suits = {0: [], 1: [], 2: [], 3: []}
+        straight_flushes = []
 
         # 过滤掉大小王
         filtered_hand = [card for card in hand if card not in [52, 53, 106, 107]]
+
+        # 按花色分类
         for card in filtered_hand:
             suits[card % 4].append(card)
 
         for suit_cards in suits.values():
             if len(suit_cards) >= 5:
-                ranks = [card // 4 for card in suit_cards]
-                for combo in combinations(ranks, 5):
-                    sorted_combo = sorted(combo)
-                    if sorted_combo == list(range(sorted_combo[0], sorted_combo[0] + 5)):
-                        straight_flush = [card for card in suit_cards if card // 4 in sorted_combo]
+                # 获取该花色的点数，去重并排序
+                ranks = sorted(set(self.get_card_rank(card) for card in suit_cards))
+                for i in range(len(ranks) - 4):
+                    if ranks[i + 4] == ranks[i] + 4:
+                        straight_flush = [card for card in suit_cards if self.get_card_rank(card) in ranks[i:i + 5]]
                         if len(straight_flush) == 5:
-                            # straight_flushes.append(straight_flush)
                             return straight_flush
         return straight_flushes
 
@@ -195,11 +197,12 @@ class Utils():
     def get_legal_triple_straight(self, hand):
         triples = self.get_legal_triples(hand, True)
         triple_straights = []
+
         for combo in combinations(triples, 2):
-            ranks = [triple[0] // 4 for triple in combo]
+            ranks = [self.get_card_rank(triple[0]) for triple in combo]
             if ranks[1] == ranks[0] + 1:
-                # triple_straights.append(combo[0] + combo[1])
                 return combo[0] + combo[1]
+        
         return triple_straights
 
     # 火箭（王炸）

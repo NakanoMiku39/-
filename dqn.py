@@ -18,7 +18,7 @@ LR = 1e-3
 BATCH_SIZE = 256
 MEMORY_SIZE = 2000
 TARGET_UPDATE = 10
-EPISODES = 200000
+EPISODES = 500000
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 utils = Utils()
 # DEVICE = torch.device("cpu")
@@ -69,7 +69,7 @@ class HierarchicalDQNAgent:
         self.memory = ReplayMemory(MEMORY_SIZE)
         self.high_level_actions = high_level_actions
         self.low_level_actions = low_level_actions
-        self.epsilon = 0.1
+        self.epsilon = 0.5
 
         # 初始化目标网络权重
         self.high_level_target_net.load_state_dict(self.high_level_net.state_dict())
