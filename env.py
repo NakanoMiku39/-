@@ -325,13 +325,16 @@ class GuanDanEnv():
                 ks.sort(key=lambda x: self.cardscale.index(x))
                 if 'A' in ks:
                     if ks == ['A', 'Q', 'K']:
-                        return "triple_pairs", 2, ('Q')
+                        # return "triple_pairs", 2, ('Q')
+                        return "triple_pairs", ('Q')
                     if ks == ['A', '2', '3']:
-                        return "triple_pairs", 2, ('A')
+                        # return "triple_pairs", 2, ('A')
+                        return "triple_pairs", ('A')
                     return "invalid", ()
                 pairs = [self.cardscale[self.cardscale.index(ks[0])+i] for i in range(3)]
                 if ks == pairs:
-                    return "triple_pairs", 2, (ks[0])
+                    # return "triple_pairs", 2, (ks[0])
+                    return "triple_pairs", (ks[0])
             return "invalid", ()
         if len(poker) > 6 and len(poker) <= 10:
             if vals.cnt(len(poker)) == 1:
