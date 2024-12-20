@@ -168,7 +168,10 @@ class GuanDanEnv():
         # 出牌奖励：如果手牌数量减少，给予正向奖励
         for player in range(4):
             if len(self.player_decks[player]) < prev_hand_sizes[player]:
-                self.reward[player] += 0.05  # 手牌减少，给予小的奖励
+                self.reward[player] += prev_hand_sizes[player] - len(self.player_decks[player])
+                # self.reward[player] += 1  # 手牌减少，给予小的奖励
+            if len(self.player_decks[player]) == 0:
+                self.reward[player] += 3
             
         if self.done:
             if len(self.cleared) == 2: # Must be a double-dweller

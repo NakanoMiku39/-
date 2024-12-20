@@ -211,7 +211,7 @@ class Utils():
             return [52, 53, 106, 107]
         return []
             
-    def plot_agent_metrics(self, agent_metrics, save_path):
+    def plot_agent_metrics(self, agent_metrics, model_folder_path):
         for i, metrics in enumerate(agent_metrics):
             plt.figure(figsize=(15, 10))
 
@@ -246,9 +246,17 @@ class Utils():
             plt.ylabel('Q-Value')
             plt.title(f'Agent {i} Low-Level Q-Value')
             plt.legend()
+            
+            # Reward
+            # plt.subplot(2, 2, 5)
+            # plt.plot(metrics['reward'], label=f'Agent {i} Reward')
+            # plt.xlabel('Steps')
+            # plt.ylabel('Reward')
+            # plt.title(f'Agent {i} Reward')
+            # plt.legend()
 
             plt.tight_layout()
-            plt.savefig(save_path)
+            plt.savefig(f"{model_folder_path}/training_curves_{i}.png")
             plt.show()
     
 class Error(Exception):
