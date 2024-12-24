@@ -26,6 +26,11 @@ class ReplayMemory:
         max_priority = float(max(self.priorities, default=1.0))
         self.memory.append((state, action, reward, next_state, done))
         self.priorities.append(max_priority)
+        
+    # def push(self, state, action, reward, next_state, done, log_prob, advantage):
+    #     max_priority = float(max(self.priorities, default=1.0))
+    #     self.memory.append((state, action, reward, next_state, done, log_prob, advantage))
+    #     self.priorities.append(max_priority)
 
     def sample(self, batch_size, beta=0.4):
         if len(self.memory) == 0:

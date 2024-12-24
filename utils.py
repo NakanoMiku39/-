@@ -69,31 +69,35 @@ class Utils():
     # 单张
     def get_legal_singles(self, hand):
         # return [[card] for card in hand]
-        return [hand[0]]
+        return hand
 
-    def get_legal_pairs(self, hand, callFromSelf):
+    def get_legal_pairs_without_jokers(self, hand):
+        # 获取普通对子，不包含大小王
+        jokers = [52, 53, 106, 107]
         pairs = []
+
+        for combo in combinations(hand, 2):
+            if self.get_card_rank(combo[0]) == self.get_card_rank(combo[1]) and combo[0] not in jokers and combo[1] not in jokers:
+                pairs.append(list(combo))
+
+        return pairs
+        
+    def get_legal_pairs(self, hand):
+        pairs = []
+        jokers = [52, 53, 106, 107]
         small_jokers = [j for j in hand if j in [52, 106]]
         big_jokers = [j for j in hand if j in [53, 107]]
 
-        # 查找普通对子
-        for combo in combinations(hand, 2):
-            if self.get_card_rank(combo[0]) == self.get_card_rank(combo[1]):
-                if not callFromSelf:
-                    return list(combo)
-                pairs.append(list(combo))
-
         # 特殊处理两个小王作为对子
         if len(small_jokers) >= 2:
-            if not callFromSelf:
-                return [small_jokers[0], small_jokers[1]]
             pairs.append([small_jokers[0], small_jokers[1]])
 
         # 特殊处理两个大王作为对子
         if len(big_jokers) >= 2:
-            if not callFromSelf:
-                return [big_jokers[0], big_jokers[1]]
             pairs.append([big_jokers[0], big_jokers[1]])
+            
+        # 查找普通对子
+        pairs += self.get_legal_pairs_without_jokers(hand)
 
         return pairs
 
@@ -103,8 +107,6 @@ class Utils():
         for combo in combinations(hand, 3):
             if (self.get_card_rank(combo[0]) == self.get_card_rank(combo[1]) == self.get_card_rank(combo[2]) and
                 all(card not in [52, 53, 106, 107] for card in combo)):
-                if not callFromSelf:
-                    return list(combo)
                 triples.append(list(combo))
         return triples
 
@@ -117,42 +119,29 @@ class Utils():
         for rank, count in rank_counts.items():
             if count >= 4:
                 bomb = [card for card in hand if self.get_card_rank(card) == rank]
-                # bombs.append(bomb[:count])
-                return bomb[:count]
-
+                bombs.append(bomb[:count])
         return bombs
-
-    def get_legal_pairs_without_jokers(self, hand):
-        # 获取普通对子，不包含大小王
-        jokers = [52, 53, 106, 107]
-        pairs = []
-
-        for combo in combinations(hand, 2):
-            if self.get_card_rank(combo[0]) == self.get_card_rank(combo[1]) and combo[0] not in jokers and combo[1] not in jokers:
-                pairs.append(list(combo))
-
-        return pairs
 
     # 三连对（木板）
     def get_legal_triple_pairs(self, hand):
+        triple_pairs = []
         pairs = self.get_legal_pairs_without_jokers(hand)
         for combo in combinations(pairs, 3):
             ranks = [self.get_card_rank(pair[0]) for pair in combo]
             ranks.sort()
             if ranks[1] == ranks[0] + 1 and ranks[2] == ranks[1] + 1:
-                return combo[0] + combo[1] + combo[2]
-        return []
+                triple_pairs.append(combo[0] + combo[1] + combo[2])
+        return triple_pairs
 
     # 三带二（夯）
     def get_legal_three_with_pair(self, hand):
         triples = self.get_legal_triples(hand, True)
-        pairs = self.get_legal_pairs(hand, True)
+        pairs = self.get_legal_pairs_without_jokers(hand)
         three_with_pair = []
         for triple in triples:
             for pair in pairs:
                 if not set(triple) & set(pair):
-                    # three_with_pair.append(triple + pair)
-                    return triple + pair
+                    three_with_pair.append(triple + pair)
         return three_with_pair
 
     # 顺子（五张相连单牌）
@@ -167,7 +156,7 @@ class Utils():
             if ranks[i + 4] == ranks[i] + 4:
                 straight = [card for card in filtered_hand if self.get_card_rank(card) in ranks[i:i + 5]]
                 if len(straight) == 5:
-                    return straight
+                    straights.append(straight)
         return straights
 
     # 同花顺（五张相连且同花色的牌）
@@ -190,7 +179,7 @@ class Utils():
                     if ranks[i + 4] == ranks[i] + 4:
                         straight_flush = [card for card in suit_cards if self.get_card_rank(card) in ranks[i:i + 5]]
                         if len(straight_flush) == 5:
-                            return straight_flush
+                            straight_flushes.append(straight_flush)
         return straight_flushes
 
     # 三同连张（钢板）
@@ -201,14 +190,13 @@ class Utils():
         for combo in combinations(triples, 2):
             ranks = [self.get_card_rank(triple[0]) for triple in combo]
             if ranks[1] == ranks[0] + 1:
-                return combo[0] + combo[1]
-        
+                triple_straights.append(combo[0] + combo[1])        
         return triple_straights
 
     # 火箭（王炸）
     def get_legal_rockets(self, hand):
         if set([52, 53, 106, 107]).issubset(hand):
-            return [52, 53, 106, 107]
+            return [[52, 53, 106, 107]]
         return []
             
     def plot_agent_metrics(self, agent_metrics, model_folder_path):
@@ -257,7 +245,7 @@ class Utils():
 
             plt.tight_layout()
             plt.savefig(f"{model_folder_path}/training_curves_{i}.png")
-            plt.show()
+            plt.close('all')
     
 class Error(Exception):
     def __init__(self, ErrorInfo):

@@ -166,23 +166,23 @@ class GuanDanEnv():
         }
         
         # 出牌奖励：如果手牌数量减少，给予正向奖励
-        for player in range(4):
-            if len(self.player_decks[player]) < prev_hand_sizes[player]:
-                self.reward[player] += prev_hand_sizes[player] - len(self.player_decks[player])
-                # self.reward[player] += 1  # 手牌减少，给予小的奖励
-            if len(self.player_decks[player]) == 0:
-                self.reward[player] += 3
+        # for player in range(4):
+        #     if len(self.player_decks[player]) < prev_hand_sizes[player]:
+        #         # self.reward[player] += prev_hand_sizes[player] - len(self.player_decks[player])
+        #         self.reward[player] += 1  # 手牌减少，给予小的奖励
+        #     if len(self.player_decks[player]) == 0:
+        #         self.reward[player] += 3
             
         if self.done:
             if len(self.cleared) == 2: # Must be a double-dweller
-                self.reward[self.cleared[0]] = 3
-                self.reward[self.cleared[1]] = 3
+                self.reward[self.cleared[0]] = 10
+                self.reward[self.cleared[1]] = 10
             elif (self.cleared[2] - self.cleared[0]) % 2 == 0:
-                self.reward[self.cleared[0]] = 2
-                self.reward[self.cleared[2]] = 2
+                self.reward[self.cleared[0]] = 5
+                self.reward[self.cleared[2]] = 5
             else:
-                self.reward[self.cleared[0]] = 1
-                self.reward[(self.cleared[0] + 2) % 4] = 1
+                self.reward[self.cleared[0]] = 3
+                self.reward[(self.cleared[0] + 2) % 4] = 3
     
     def _raise_error(self, errno, detail):
         raise Error(self.errset[errno]+": "+detail)
@@ -198,7 +198,7 @@ class GuanDanEnv():
             3: 0
         }
         self.done = True
-        self.reward[fault_player] = -3
+        self.reward[fault_player] = -5
         return self._get_obs(-1)
     
     def _get_obs(self, player):

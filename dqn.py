@@ -11,17 +11,22 @@ import gc
 from utils import Utils
 from ReplayMemory import ReplayMemory
 import torch.multiprocessing as mp
+import traceback
 
 # Hyperparameters
 NUM_AGENTS = 4
-NUM_CORES = 40  # 指定使用的 CPU 核心数量
+NUM_CORES = 20  # 指定使用的 CPU 核心数量
 GAMMA = 0.99
 LR = 1e-3
-BATCH_SIZE = 20000
+BATCH_SIZE = 5000
 MEMORY_SIZE = 100000
-TARGET_UPDATE = 1000
+TARGET_UPDATE = 10000
 DEBUG_UPDATE = 10000
-EPISODES = 2000000
+EPISODES = 160000000
+N_STEP = 10
+EPSILON_START = 0.5
+EPSILON_MIN = 0.1
+RESET_INTERVAL = 1000000
 # DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEVICE = torch.device("cuda:1")
 model_folder_path = "targetDQN"
@@ -78,9 +83,9 @@ class HierarchicalDQNAgent:
         self.low_level_actions = low_level_actions
        
         # 初始化 epsilon 和 epsilon 衰减参数
-        self.epsilon = 1.0  # 初始探索概率
-        self.epsilon_min = 0.05  # 最小探索概率
-        self.epsilon_decay = 0.95  # 每个 episode 的衰减率
+        self.epsilon = EPSILON_START  # 初始探索概率
+        self.epsilon_min = EPSILON_MIN  # 最小探索概率
+        self.epsilon_decay = 0.99  # 每个 episode 的衰减率
 
         # 初始化目标网络权重
         self.high_level_target_net.load_state_dict(self.high_level_net.state_dict())
@@ -89,6 +94,12 @@ class HierarchicalDQNAgent:
     def update_epsilon(self):
         """在每个 episode 结束后调用此函数来更新 epsilon"""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        
+    def update_epsilon_periodic(self, episode):
+        if episode % RESET_INTERVAL == 0:
+            return EPSILON_START
+        decay_rate = (EPSILON_START - EPSILON_MIN) / RESET_INTERVAL
+        self.epsilon = max(EPSILON_MIN, EPSILON_START - decay_rate * (episode % RESET_INTERVAL))
         
     def select_high_level_action(self, state):
         state = state.to(DEVICE)
@@ -115,57 +126,49 @@ class HierarchicalDQNAgent:
             q_values = self.low_level_net(state).cpu().numpy()
 
         # 筛选当前手牌中的牌，并根据 Q 值排序
-        hand_q_values = [(card, q_values[card]) for card in hand]
-        hand_q_values.sort(key=lambda x: x[1], reverse=True)
+        # hand_q_values = [(card, q_values[card]) for card in hand]
+        # hand_q_values.sort(key=lambda x: x[1], reverse=True)
 
         # 根据高层决策选择相应的牌型
         if high_level_action == 0:  # 单张
-            return utils.get_legal_singles([card for card, _ in hand_q_values])
+            possible_combinations = [[card] for card in hand]  # 保证输出是列表
         elif high_level_action == 1:  # 对子
-            pairs = utils.get_legal_pairs([card for card, _ in hand_q_values], False)
-            if pairs:
-                return pairs
+            possible_combinations = utils.get_legal_pairs(hand)
         elif high_level_action == 2:  # 三同张
-            triples = utils.get_legal_triples([card for card, _ in hand_q_values], False)
-            if triples:
-                return triples
+            possible_combinations = utils.get_legal_triples(hand, False)
         elif high_level_action == 3:  # 炸弹
-            bombs = utils.get_legal_bombs([card for card, _ in hand_q_values])
-            if bombs:
-                return bombs
+            possible_combinations = utils.get_legal_bombs(hand)
         elif high_level_action == 4:  # 三连对（木板）
-            triple_pairs = utils.get_legal_triple_pairs([card for card, _ in hand_q_values])
-            if triple_pairs:
-                return triple_pairs
+            possible_combinations = utils.get_legal_triple_pairs(hand)
         elif high_level_action == 5:  # 三同连张（钢板）
-            triple_straights = utils.get_legal_triple_straight([card for card, _ in hand_q_values])
-            if triple_straights:
-                return triple_straights
+            possible_combinations = utils.get_legal_triple_straight(hand)
         elif high_level_action == 6:  # 三带二（夯）
-            three_with_pair = utils.get_legal_three_with_pair([card for card, _ in hand_q_values])
-            if three_with_pair:
-                return three_with_pair
+            possible_combinations = utils.get_legal_three_with_pair(hand)
         elif high_level_action == 7:  # 顺子
-            straights = utils.get_legal_straights([card for card, _ in hand_q_values])
-            if straights:
-                return straights
+            possible_combinations = utils.get_legal_straights(hand)
         elif high_level_action == 8:  # 同花顺
-            straight_flushes = utils.get_legal_straight_flushes([card for card, _ in hand_q_values])
-            if straight_flushes:
-                return straight_flushes
+            possible_combinations = utils.get_legal_straight_flushes(hand)
         elif high_level_action == 9:  # 火箭（王炸）
-            rockets = utils.get_legal_rockets([card for card, _ in hand_q_values])
-            if rockets:
-                return rockets
+            possible_combinations = utils.get_legal_rockets(hand)
 
-        # 如果没有找到合适的组合，则 Pass
-        return []
+        # 如果没有找到符合条件的组合，则返回 Pass
+        if not possible_combinations:
+            return []
+        # else: 
+        #     print(f"Possible combo: {possible_combinations}")
+    
+        # 根据 Q 值对可能的组合排序
+        combination_q_values = [(combo, sum(q_values[card] for card in combo)) for combo in possible_combinations]
+        combination_q_values.sort(key=lambda x: x[1], reverse=True)
+
+        # 返回 Q 值最高的组合
+        return combination_q_values[0][0]
 
     def update_target_networks(self):
         self.high_level_target_net.load_state_dict(self.high_level_net.state_dict())
         self.low_level_target_net.load_state_dict(self.low_level_net.state_dict())
 
-    def update(self, global_memory, beta=0.4, n_step=3):
+    def update(self, global_memory, beta=0.4, n_step=N_STEP):
         if len(global_memory) < BATCH_SIZE:
             return 0, 0, 0, 0
 
@@ -175,9 +178,11 @@ class HierarchicalDQNAgent:
         
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        # 解包高层和低层动作
+        # 解包高层和低层动作和奖励
         high_level_actions, low_level_actions = zip(*actions)   
-            
+        high_level_rewards, low_level_rewards = zip(*rewards)   
+           
+        # 低层动作转换为独热编码
         low_level_actions_one_hot = []
         utils.Action2Onehot(low_level_actions, low_level_actions_one_hot)
 
@@ -187,33 +192,36 @@ class HierarchicalDQNAgent:
         states = torch.FloatTensor(np.array(states)).to(DEVICE)
         high_level_actions = torch.LongTensor(high_level_actions).unsqueeze(1).to(DEVICE)
         # rewards = torch.FloatTensor(rewards).unsqueeze(1).to(DEVICE)
-        rewards = list(rewards)
         next_states = torch.FloatTensor(np.array(next_states)).to(DEVICE)
         dones = torch.FloatTensor(dones).unsqueeze(1).to(DEVICE)
         weights = torch.FloatTensor(np.array(weights)).to(DEVICE)
 
         # 计算 n-step 累积奖励
-        discounted_rewards = []
-        for i in range(len(rewards)):
-            G = 0
+        discounted_low_level_rewards, discounted_high_level_rewards = [], []
+        for i in range(len(low_level_rewards)):
+            low_G, high_G = 0, 0
             for j in range(n_step):
-                if i + j < len(rewards):
-                    G += (GAMMA ** j) * rewards[i + j]
+                if i + j < len(low_level_rewards):
+                    low_G += (GAMMA ** j) * low_level_rewards[i + j]  # 累计低层奖励
+                    high_G += (GAMMA ** (j * 2)) * high_level_rewards[i + j]  # 累计高层奖励（较慢衰减）
                 if i + j < len(dones) and dones[i + j]:
                     break
-            discounted_rewards.append(G)
+            discounted_low_level_rewards.append(low_G)
+            discounted_high_level_rewards.append(high_G)
 
-        discounted_rewards = torch.FloatTensor(discounted_rewards).unsqueeze(1).to(DEVICE)
-    
+        # 转换为 PyTorch 张量
+        discounted_low_level_rewards = torch.FloatTensor(discounted_low_level_rewards).unsqueeze(1).to(DEVICE)
+        discounted_high_level_rewards = torch.FloatTensor(discounted_high_level_rewards).unsqueeze(1).to(DEVICE)
+        
         # 更新低层网络
-        low_level_loss, low_level_q_value = self._update_low_level_network(states, low_level_actions_one_hot, discounted_rewards, next_states, dones, indices, weights)
+        low_level_loss, low_level_q_value = self._update_low_level_network(states, low_level_actions_one_hot, discounted_low_level_rewards, next_states, dones, indices, weights)
 
         # 更新高层网络
-        high_level_loss, high_level_q_value = self._update_high_level_network(states, high_level_actions, discounted_rewards, next_states, dones, indices, weights)
+        high_level_loss, high_level_q_value = self._update_high_level_network(states, high_level_actions, discounted_high_level_rewards, next_states, dones, indices, weights)
         
         return low_level_loss, low_level_q_value, high_level_loss, high_level_q_value
     
-    def _update_low_level_network(self, states, actions_one_hot, rewards, next_states, dones, indices, weights, n_step=3):
+    def _update_low_level_network(self, states, actions_one_hot, rewards, next_states, dones, indices, weights, n_step=N_STEP):
         q_values = (self.low_level_net(states) * actions_one_hot).sum(dim=1, keepdim=True)
         next_q_values = self.low_level_target_net(next_states).max(1)[0].unsqueeze(1)
         target_q_values = rewards + (GAMMA ** n_step) * next_q_values * (1 - dones)
@@ -230,7 +238,7 @@ class HierarchicalDQNAgent:
     
         return loss.item(), q_values.mean().item()
 
-    def _update_high_level_network(self, states, actions, rewards, next_states, dones, indices, weights, n_step=3):
+    def _update_high_level_network(self, states, actions, rewards, next_states, dones, indices, weights, n_step=N_STEP):
         q_values = self.high_level_net(states).gather(1, actions)
         next_q_values = self.high_level_target_net(next_states).max(1)[0].unsqueeze(1)
         target_q_values = rewards + (GAMMA ** n_step) * next_q_values * (1 - dones)
@@ -293,11 +301,10 @@ def train(rank):
         agent_metrics = [{'low_level_loss': [], 'high_level_loss': [], 'reward': [], 'low_level_q_value': [], 'high_level_q_value': []} for _ in range(NUM_AGENTS)]
         
         high_level_action_space = ["单张", "对子", "三带", "炸弹", "三连对（木板）", "三同连张（钢板）", "三带二（夯）", "顺子", "同花顺", "火箭（王炸）", "过"]
+        high_level_action_picks = [ 0 for i in range(high_level_actions)]
         wins = 0
-
-        agent = HierarchicalDQNAgent(input_dim, high_level_actions, low_level_actions)
-        
-        print(f"Validate cardmapping: {card_mapping}")
+      
+        # print(f"Validate cardmapping: {card_mapping}")
         # 加载之前的模型权重
         try:
             # agent.high_level_net.load_state_dict(torch.load("targetDQN/high_level_dqn_guandan.pth", map_location=DEVICE))
@@ -309,34 +316,46 @@ def train(rank):
         except FileNotFoundError:
             print("未找到权重文件，将从头开始训练。")
             
-        for episode in range(EPISODES // mp.cpu_count()):
+        episode = 0
+        # for episode in range(EPISODES // mp.cpu_count()):
+        while True:
             obs = env.reset()
+            episode += 1
             # done = False
             total_reward = 0
             current_player = 0
-            episode_rewards = [0] * NUM_AGENTS  # 每个智能体的回合总奖励
+            # episode_rewards = [0] * NUM_AGENTS  # 每个智能体的回合总奖励
             # print(f"Episode {episode}")
             while not env.done:
                 agent = agents[current_player]
                 player_obs = obs[current_player]
-                reward = 0
+                high_level_reward = 0
+                low_level_reward = 0
                 # 如果当前玩家出完牌了
-                if player_obs['status'] == "Finished":
+                if current_player in env.cleared:
                     current_player = (current_player + 1) % 4
                     continue
                 
-                state = torch.FloatTensor(encode_obs(player_obs)).to(DEVICE)
+                state = torch.FloatTensor(encode_obs(player_obs)).to(DEVICE)                
+                
                 # Step 1: High-Level action selection (e.g., Single, Pair, Triple, Bomb, Pass)
                 high_level_action = agent.select_high_level_action(state)
-
+                
+                # 记录动作选取次数
+                high_level_action_picks[high_level_action] += 1
+                
                 # Step 2: Low-Level action selection
+                # 出牌
                 if high_level_action in range(high_level_actions - 1):
                     low_level_action = agent.select_low_level_action(state, player_obs['deck'], high_level_action)
-                    if not low_level_action:
-                        reward += 1
+                    if low_level_action:
+                        high_level_reward = 3
                     else:
-                        reward -= 1
+                        high_level_reward = -10
+                # 过
                 else:
+                    high_level_reward = -1
+                    low_level_reward = 0
                     low_level_action = []
 
                 # 执行选择的动作
@@ -344,18 +363,26 @@ def train(rank):
                 # Step后下一个状态
                 next_obs = env.step(response)
                 obs = next_obs
-                # print(f"Next_obs: {next_obs}")
-                # 当前玩家出牌后的reward
-                reward += env._get_obs(current_player)[current_player]['reward']
+                
+                # 开始计算奖励
+                if env.game_state_info == f"Player {current_player}: ILLEGAL PASS AS FIRST-HAND":
+                    high_level_reward = -10
+                elif env.game_state_info == f"Player {current_player}: POKERTYPE MISMATCH":
+                    high_level_reward = -5
+                elif env.game_state_info == f"Player {current_player}: CANNOT BEAT LASTMOVE":
+                    high_level_reward = -3
+                    low_level_reward = -5
+                elif low_level_action: 
+                    low_level_reward = 3 # env._get_obs(current_player)[current_player]['reward']
+                
+                # Debug信息
                 if episode % DEBUG_UPDATE == 0:
                     print(f"Player {current_player}: {[card_mapping[i] for i in player_obs['deck']]}")
                     print(f"high level action: {high_level_action_space[high_level_action]}")
                     print(f"low level action: {[card_mapping[i] for i in low_level_action]}")
-                    print(f"Player {current_player}: 获得了 {reward} 的奖励")
+                    print(f"获得了 high level reward: {high_level_reward}, low level reward: {low_level_reward}")
 
-                # total_reward += reward
-                
-                episode_rewards[current_player] += reward  # 累加当前玩家的奖励
+                # 记录画图数据
                 if episode % 1000 == 0:
                     low_level_loss, low_level_q_value, high_level_loss, high_level_q_value = agent.update(global_memory)
                     agent_metrics[current_player]['low_level_loss'].append(low_level_loss)
@@ -363,15 +390,30 @@ def train(rank):
                     agent_metrics[current_player]['high_level_loss'].append(high_level_loss)
                     agent_metrics[current_player]['high_level_q_value'].append(high_level_q_value)
                     
-                    agent_metrics[i]['reward'].append(episode_rewards[i])
+                    # agent_metrics[i]['reward'].append(episode_rewards[i])
 
                 # 处理游戏结束时的 next_state
                 if env.done:
                     if env.game_state_info == "Finished":
                         print("A successful end game!")
                         wins += 1
-                    
-                        # print("A faulty game")
+                        # 获取每个玩家的最终奖励
+                        print(f"Final rewards: {obs[player_id][reward]}")
+
+                        # 将最终奖励存储到 global_memory 中
+                        for player_id in range(NUM_AGENTS):
+                            # 假设 state 和 next_state 在最后一轮已经更新
+                            final_state = torch.FloatTensor(encode_obs(obs[player_id])).to(DEVICE)
+                            global_memory.push(
+                                final_state.cpu(), 
+                                None,  # 最后一轮没有动作
+                                (obs[player_id][reward], 0),  # 只记录高层奖励
+                                torch.zeros_like(final_state).cpu(),  # 游戏结束时的 next_state 为零向量
+                                True  # 标志游戏结束
+                            )
+                            break
+                    elif episode % DEBUG_UPDATE == 0:
+                        print(f"A faulty game by {env.game_state_info}")
                     next_state = torch.zeros_like(state)  # 游戏结束时，设置零向量
                 else:
                     # 下一个玩家
@@ -385,40 +427,34 @@ def train(rank):
 
                 # 存储经验
                 # agent.memory.push(state.cpu(), (high_level_action, low_level_action), reward, next_state.cpu(), done)
-                global_memory.push(state.cpu(), (high_level_action, low_level_action), reward, next_state.cpu(), env.done)
-                
-                
-            # 记录奖励
-            # reward_history.append(total_reward)
-            # 每个 agent 记录总奖励
-            # for i in range(NUM_AGENTS):
-            #     agent_metrics[i]['reward'].append(episode_rewards[i])
-                
+                global_memory.push(state.cpu(), (high_level_action, low_level_action), (high_level_reward, low_level_reward), next_state.cpu(), env.done)
+                                       
             # 在 episode 结束后更新 epsilon         
             if episode % TARGET_UPDATE == 0:
                 for agent in agents:
                     agent.update_target_networks()
-                    agent.update_epsilon()
+            agent.update_epsilon_periodic(episode)
                 
             if episode % DEBUG_UPDATE == 0:
                 # print(f"Episode {episode}, Total Reward: {total_reward}")
-                print(f"Episode {episode}, Player 0 Epsilon: {agents[0].epsilon}")
+                print(f"Episode {episode}, 当前 Epsilon: {agents[0].epsilon}")
+                print(f"总计出现了 {', '.join([f'{high_level_action_space[i]}: {high_level_action_picks[i]}' for i in range(high_level_actions)])}")
                 print("---")
-                
-        # 绘制权重变化
-        # plot_training_curves(loss_history, reward_history, weight_history)
-        
-        
-        # 保存权重
-        for i, agent in enumerate(agents):
-            torch.save(agent.high_level_net.state_dict(), f"{model_folder_path}/agent_{i}_high_level.pth")
-            torch.save(agent.low_level_net.state_dict(), f"{model_folder_path}/agent_{i}_low_level.pth")
+                utils.plot_agent_metrics(agent_metrics, model_folder_path)
 
+                        
+            # 保存权重
+            if episode % 100000 == 0:
+                for i, agent in enumerate(agents):
+                    torch.save(agent.high_level_net.state_dict(), f"{model_folder_path}/agent_{i}_high_level.pth")
+                    torch.save(agent.low_level_net.state_dict(), f"{model_folder_path}/agent_{i}_low_level.pth")
         print(f"Results:\nTotal episodes: {EPISODES}\nSuccessful end game: {wins}")
-        utils.plot_agent_metrics(agent_metrics, model_folder_path)
+
         
     except Exception as e:
         print(f"Error in process {rank}: {e}")
+        print("Stack trace:")
+        traceback.print_exc()
 
 if __name__ == "__main__":
     mp.set_start_method('spawn')  # 设置启动方法
