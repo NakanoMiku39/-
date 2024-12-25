@@ -15,20 +15,25 @@ import traceback
 
 # Hyperparameters
 NUM_AGENTS = 4
-NUM_CORES = 20  # 指定使用的 CPU 核心数量
+NUM_CORES = 40  # 指定使用的 CPU 核心数量
 GAMMA = 0.99
 LR = 1e-3
-BATCH_SIZE = 5000
-MEMORY_SIZE = 100000
-TARGET_UPDATE = 10000
-DEBUG_UPDATE = 1000
+BATCH_SIZE = 1000
+MEMORY_SIZE = 10000
+HIGH_UPDATE = 50
+LOW_UPDATE = 1000
+TARGET_SAVE = 1000
+DEBUG_UPDATE = 200
 EPISODES = 400000
 CLIP_EPSILON = 0.2  # 默认值
 ENTROPY_COEFF = 0.01  # 控制熵奖励权重
-RESET_INTERVAL = 100000
+N_STEP = 10
+EPSILON_START = 0.1
+EPSILON_MIN = 0.1
+RESET_INTERVAL = 1000000
 # DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEVICE = torch.device("cuda:0")
-model_folder_path = "PPO"
+model_folder_path = "PPO2"
 utils = Utils()
 # DEVICE = torch.device("cpu")
 
@@ -58,19 +63,48 @@ class PPOPolicyNetwork(nn.Module):
         action_logits = torch.clamp(action_logits, min=-10, max=10)  # 裁剪 logits
         state_value = self.value_head(x)
         return F.softmax(action_logits, dim=-1), state_value
+
+class LowLevelDQN(nn.Module):
+    def __init__(self):
+        super(LowLevelDQN, self).__init__()
+        self.fc1 = nn.Linear(324, 128)
+        self.fc2 = nn.Linear(128, 128)
+        self.fc3 = nn.Linear(128, 108)  # 输出108维向量，每个维度对应一张牌的概率
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        return self.fc3(x)  # 使用 sigmoid 确保输出在 [0, 1] 范围内
     
 class HierarchicalPPOAgent:
     def __init__(self, input_dim, high_level_actions, low_level_actions):
         self.high_level_net = PPOPolicyNetwork(input_dim, high_level_actions).to(DEVICE)
-        self.low_level_net = PPOPolicyNetwork(input_dim, low_level_actions).to(DEVICE)
+        self.low_level_net = LowLevelDQN().to(DEVICE)
+        self.low_level_target_net = LowLevelDQN().to(DEVICE)
 
         self.high_level_optimizer = optim.Adam(self.high_level_net.parameters(), lr=LR)
         self.low_level_optimizer = optim.Adam(self.low_level_net.parameters(), lr=LR)
                
+        self.entropy_coeff_start = 0.1  # 熵权重初始值
+        self.entropy_coeff_end = 0.01  # 熵权重最终值
+        self.total_episodes = EPISODES  # 总训练轮数
+        
+    def adjust_entropy_coeff(self, episode):
+        """
+        根据当前训练轮数动态调整熵奖励权重。
+        """
+        decay_rate = (self.entropy_coeff_start - self.entropy_coeff_end) / self.total_episodes
+        entropy_coeff = max(self.entropy_coeff_end, self.entropy_coeff_start - decay_rate * episode)
+        return entropy_coeff
+    
     def select_high_level_action(self, state):
         state = state.to(DEVICE)
         with torch.no_grad():
             action_probs, _ = self.high_level_net(state)
+            
+            # print(f"Probs: {action_probs}")
+            # print(f"Prob_sum: {action_probs.sum()}")  # 确保等于1
+
 
             # 确保 action_probs 是有效的概率分布
             action_probs = torch.softmax(action_probs, dim=-1)
@@ -84,13 +118,26 @@ class HierarchicalPPOAgent:
             return action.item(), action_dist.log_prob(action)
 
     def select_low_level_action(self, state, hand, high_level_action):
-        state = state.to(DEVICE)
-        with torch.no_grad():
-            action_probs, _ = self.low_level_net(state)
-            q_values = action_probs.cpu().numpy()
+        """
+        根据手牌和高层决策选择具体的牌组合。
 
+        Args:
+            hand (list): 当前手牌。
+            high_level_action (int): 高层决策的动作索引。
+
+        Returns:
+            list: 选择的牌组合。
+        """
+        state = state.to(DEVICE)
+
+        with torch.no_grad():
+            q_values = self.low_level_net(state).cpu().numpy()
+            
+        # print(f"q_values: {q_values}")
+
+        # 根据高层决策选择相应的牌型
         if high_level_action == 0:  # 单张
-            possible_combinations = [[card] for card in hand]
+            possible_combinations = [[card] for card in hand]  # 保证输出是列表
         elif high_level_action == 1:  # 对子
             possible_combinations = utils.get_legal_pairs(hand)
         elif high_level_action == 2:  # 三同张
@@ -110,44 +157,75 @@ class HierarchicalPPOAgent:
         elif high_level_action == 9:  # 火箭（王炸）
             possible_combinations = utils.get_legal_rockets(hand)
 
+        # 如果没有找到符合条件的组合，则返回 Pass
         if not possible_combinations:
-            return [], torch.tensor(0.0)
+            return []
+        # else: 
+        #     print(f"Possible combo: {possible_combinations}")
+    
+        # 根据 Q 值对可能的组合排序
+        # Epsilon-greedy 选择策略
+        if random.random() < EPSILON_START:  # 随机探索
+            random_choice = random.choice(possible_combinations)
+            return random_choice
+        else:  # 按照 Q 值选择最优动作
+            combination_q_values = [(combo, sum(q_values[card] for card in combo)) for combo in possible_combinations]
+            combination_q_values.sort(key=lambda x: x[1], reverse=True)
 
-        combination_q_values = [(combo, sum(q_values[card] for card in combo)) for combo in possible_combinations]
-        combination_q_values.sort(key=lambda x: x[1], reverse=True)
-        best_combo = combination_q_values[0][0]
-        best_value = torch.tensor(combination_q_values[0][1])
+        # 返回 Q 值最高的组合
+        return combination_q_values[0][0]
 
-        return best_combo, best_value
-
-    def update_policy(self, policy_net, optimizer, states, actions, rewards, old_log_probs, advantages, is_low_level=False):
+    def _update_high_level_network(self, policy_net, optimizer, states, actions, rewards, old_log_probs, advantages, episode):
         # 前向传播
         action_probs, state_values = policy_net(states)
 
-        if is_low_level:
-            # 对于低层独热编码，直接计算每个动作的概率
-            log_probs = torch.sum(actions * torch.log(action_probs + 1e-10), dim=1, keepdim=True)
-        else:
-            # 对于高层动作，确保 actions 是二维张量
-            actions = actions.long().unsqueeze(1)
-            log_probs = torch.log(action_probs.gather(1, actions))
+        # 对于高层动作，确保 actions 是二维张量
+        actions = actions.long().unsqueeze(1)
+        log_probs = torch.log(action_probs.gather(1, actions))
 
         # 计算比率和损失
         ratios = torch.exp(log_probs - old_log_probs)
         clipped_ratios = torch.clamp(ratios, 1 - CLIP_EPSILON, 1 + CLIP_EPSILON)
         policy_loss = -torch.min(ratios * advantages, clipped_ratios * advantages).mean()
         value_loss = F.mse_loss(state_values.squeeze(), rewards)
+        # 动态调整熵权重
+        entropy_coeff = self.adjust_entropy_coeff(episode)
         entropy_loss = -(action_probs * torch.log(action_probs + 1e-10)).sum(dim=1).mean()
+        
+        
+        if episode % DEBUG_UPDATE == 0:
+            # print(f"action_probs: {action_probs}")
+            print(f"Policy loss: {policy_loss.item()}")
+            print(f"Value loss: {value_loss.item()}")
+            print(f"Entropy loss: {entropy_loss.item()}")
+
 
         # 总损失
-        loss = policy_loss + 0.5 * value_loss - ENTROPY_COEFF * entropy_loss
+        loss = policy_loss + 0.5 * value_loss - entropy_coeff * entropy_loss
 
         # 优化
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        
+    def _update_low_level_network(self, states, actions_one_hot, rewards, next_states, dones, indices, weights, n_step=N_STEP):
+        q_values = (self.low_level_net(states) * actions_one_hot).sum(dim=1, keepdim=True)
+        next_q_values = self.low_level_target_net(next_states).max(1)[0].unsqueeze(1)
+        target_q_values = rewards + (GAMMA ** n_step) * next_q_values * (1 - dones)
 
-    def update(self, memory):
+        loss = F.mse_loss(q_values, target_q_values)
+        loss = (F.mse_loss(q_values, target_q_values, reduction='none') * weights).mean()
+
+        self.low_level_optimizer.zero_grad()
+        loss.backward()
+        self.low_level_optimizer.step()
+        
+        td_errors = (q_values - target_q_values).detach().cpu().numpy()
+        global_memory.update_priorities(indices, td_errors)
+            
+        return loss.item(), q_values.mean().item()
+
+    def update(self, memory, episode):
         if len(memory) < BATCH_SIZE:
             return
 
@@ -155,11 +233,8 @@ class HierarchicalPPOAgent:
 
         # 解包每一条经验
         batch, indices, weights = memory.sample(BATCH_SIZE)
-        states, actions, rewards, old_log_probs, advantages = zip(*batch)
+        states, actions, rewards, next_states, dones, high_log_probs, advantages = zip(*batch)
 
-        # 转换为张量
-        states = torch.stack(states).to(DEVICE)
-        
         high_actions, low_actions = zip(*actions)
         high_actions = torch.tensor(high_actions).to(DEVICE)
         
@@ -171,16 +246,38 @@ class HierarchicalPPOAgent:
         high_rewards = torch.tensor(high_rewards, dtype=torch.float).to(DEVICE)
         low_rewards = torch.tensor(low_rewards, dtype=torch.float).to(DEVICE)
         
-        high_log_probs, low_log_probs = zip(*old_log_probs)
+        # 计算 n-step 累积奖励
+        discounted_low_level_rewards = []
+        for i in range(len(low_rewards)):
+            low_G, high_G = 0, 0
+            for j in range(N_STEP):
+                if i + j < len(low_rewards):
+                    low_G += (GAMMA ** j) * low_rewards[i + j]  # 累计低层奖励
+                if i + j < len(dones) and dones[i + j]:
+                    break
+            discounted_low_level_rewards.append(low_G)
+        discounted_low_level_rewards = torch.FloatTensor(discounted_low_level_rewards).unsqueeze(1).to(DEVICE)
+        
         # 确保 log_probs 是一维张量
         high_log_probs = torch.stack([log_prob.unsqueeze(0) for log_prob in high_log_probs]).to(DEVICE)
-        low_log_probs = torch.stack([log_prob.unsqueeze(0) for log_prob in low_log_probs]).to(DEVICE)
         
         advantages = torch.stack(advantages).to(DEVICE)
 
         # 更新高层和低层网络
-        self.update_policy(self.high_level_net, self.high_level_optimizer, states, high_actions, high_rewards, high_log_probs, advantages, is_low_level=False,)
-        self.update_policy(self.low_level_net, self.low_level_optimizer, states, low_level_actions_one_hot, low_rewards, low_log_probs, advantages, is_low_level=True,)
+        # 转换为张量
+        if episode % HIGH_UPDATE == 0:
+            high_states = torch.stack(states).to(DEVICE)
+            self._update_high_level_network(self.high_level_net, self.high_level_optimizer, high_states, high_actions, high_rewards, high_log_probs, advantages, episode)
+        
+        low_states = torch.FloatTensor(np.array(states)).to(DEVICE)
+        next_states = torch.FloatTensor(np.array(next_states)).to(DEVICE)
+        dones = torch.FloatTensor(dones).unsqueeze(1).to(DEVICE)
+        weights = torch.FloatTensor(np.array(weights)).to(DEVICE)
+        self._update_low_level_network(low_states, low_level_actions_one_hot, discounted_low_level_rewards, next_states, dones, indices, weights)
+        
+        if episode % LOW_UPDATE == 0:
+            self.low_level_target_net.load_state_dict(self.low_level_net.state_dict())
+
 
     
 def encode_obs(obs):
@@ -238,8 +335,10 @@ def train(rank):
         except FileNotFoundError:
             print("未找到权重文件，将从头开始训练。")
             
-        
+        # episode = 0
         for episode in range(EPISODES):
+        # while True:
+            # episode += 1
             obs = env.reset()
             current_player = 0
             done = False
@@ -264,9 +363,9 @@ def train(rank):
 
                 # Low-level action selection
                 if high_action in range(high_level_actions - 1):
-                    low_action, low_log_prob = agent.select_low_level_action(state, player_obs['deck'], high_action)
+                    low_action = agent.select_low_level_action(state, player_obs['deck'], high_action)
                     if low_action:
-                        high_reward = 3
+                        high_reward = len(low_action)
                     else:
                         high_reward = -10
                 # 过
@@ -274,7 +373,6 @@ def train(rank):
                     high_reward = -1
                     low_reward = 0
                     low_action = []
-                    low_log_prob = torch.tensor(0.0)  # 空动作时对数概率为零
 
                 # Execute action
                 response = {'player': current_player, 'action': low_action, 'claim': low_action}
@@ -330,15 +428,17 @@ def train(rank):
                     state.cpu(),  # 当前状态
                     (high_action, low_action),  # 动作
                     (high_reward, low_reward),  # 奖励
-                    (high_log_prob.cpu(), low_log_prob.cpu()),  # 动作对数概率
+                    next_state.cpu(), 
+                    env.done,
+                    high_log_prob.cpu(),  # 动作对数概率
                     advantage.cpu(),  # 优势
                 )
 
             # Update agent policies
             for agent in agents:
-                agent.update(global_memory)
+                agent.update(global_memory, episode)
 
-            if episode % TARGET_UPDATE == 0:
+            if episode % TARGET_SAVE == 0:
                 for i, agent in enumerate(agents):
                     torch.save(agent.high_level_net.state_dict(), f"{model_folder_path}/agent_{i}_high_level.pth")
                     torch.save(agent.low_level_net.state_dict(), f"{model_folder_path}/agent_{i}_low_level.pth")
@@ -366,6 +466,5 @@ if __name__ == "__main__":
         processes.append(p)
     for p in processes:
         p.join()
-    print("Done")
     
 

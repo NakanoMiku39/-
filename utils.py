@@ -151,17 +151,27 @@ class Utils():
         filtered_hand = [card for card in hand if card not in [52, 53, 106, 107]]
         ranks = sorted(set(self.get_card_rank(card) for card in filtered_hand))
 
-        # 连续检查，而非生成所有组合
+        # 查找连续五张点数
         for i in range(len(ranks) - 4):
-            if ranks[i + 4] == ranks[i] + 4:
-                straight = [card for card in filtered_hand if self.get_card_rank(card) in ranks[i:i + 5]]
+            if ranks[i + 4] == ranks[i] + 4:  # 点数连续
+                straight_ranks = ranks[i:i + 5]
+                # 筛选符合条件的牌
+                straight = []
+                used_cards = set()  # 用于避免重复点数
+                for card in filtered_hand:
+                    rank = self.get_card_rank(card)
+                    if rank in straight_ranks and rank not in used_cards:
+                        straight.append(card)
+                        used_cards.add(rank)  # 确保每个点数只选一张
+                # 确保长度严格为 5
                 if len(straight) == 5:
                     straights.append(straight)
         return straights
 
+
     # 同花顺（五张相连且同花色的牌）
     def get_legal_straight_flushes(self, hand):
-        suits = {0: [], 1: [], 2: [], 3: []}
+        suits = {0: [], 1: [], 2: [], 3: []}  # 花色分类
         straight_flushes = []
 
         # 过滤掉大小王
@@ -171,15 +181,28 @@ class Utils():
         for card in filtered_hand:
             suits[card % 4].append(card)
 
-        for suit_cards in suits.values():
-            if len(suit_cards) >= 5:
-                # 获取该花色的点数，去重并排序
-                ranks = sorted(set(self.get_card_rank(card) for card in suit_cards))
-                for i in range(len(ranks) - 4):
-                    if ranks[i + 4] == ranks[i] + 4:
-                        straight_flush = [card for card in suit_cards if self.get_card_rank(card) in ranks[i:i + 5]]
-                        if len(straight_flush) == 5:
-                            straight_flushes.append(straight_flush)
+        # 对每种花色分别查找同花顺
+        for suit, suit_cards in suits.items():
+            if len(suit_cards) < 5:
+                continue
+
+            # 获取该花色的点数并按原牌保留完整映射
+            card_by_rank = {}
+            for card in suit_cards:
+                rank = self.get_card_rank(card)
+                if rank not in card_by_rank:
+                    card_by_rank[rank] = []
+                card_by_rank[rank].append(card)
+
+            # 获取点数排序
+            ranks = sorted(card_by_rank.keys())
+            for i in range(len(ranks) - 4):  # 至少5张连续点数
+                if ranks[i + 4] == ranks[i] + 4:  # 点数连续
+                    straight_flush = []
+                    for rank in ranks[i:i + 5]:
+                        straight_flush.append(card_by_rank[rank][0])  # 每个点数取一张牌
+                    if len(straight_flush) == 5:
+                        straight_flushes.append(straight_flush)
         return straight_flushes
 
     # 三同连张（钢板）
