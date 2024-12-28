@@ -15,7 +15,7 @@ import traceback
 
 # Hyperparameters
 NUM_AGENTS = 4
-NUM_CORES = 20  # 指定使用的 CPU 核心数量
+NUM_CORES = 1  # 指定使用的 CPU 核心数量
 GAMMA = 0.99
 LR = 1e-3
 BATCH_SIZE = 5000
@@ -66,7 +66,7 @@ class LowLevelDQN(nn.Module):
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        return torch.sigmoid(self.fc3(x))  # 使用 sigmoid 确保输出在 [0, 1] 范围内
+        return self.fc3(x)  # 使用 sigmoid 确保输出在 [0, 1] 范围内
 
 class HierarchicalDQNAgent:
     def __init__(self, input_dim, high_level_actions, low_level_actions):
@@ -107,7 +107,9 @@ class HierarchicalDQNAgent:
             return random.randint(0, self.high_level_actions - 1)
         else:
             with torch.no_grad():
-                return self.high_level_net(state).argmax().item()
+                action = self.high_level_net(state)
+                print(f"action: {action}")
+                return action.argmax().item()
 
     def select_low_level_action(self, state, hand, high_level_action):
         """
@@ -124,6 +126,8 @@ class HierarchicalDQNAgent:
 
         with torch.no_grad():
             q_values = self.low_level_net(state).cpu().numpy()
+            
+        print(f"q_values: {q_values}")
 
         # 筛选当前手牌中的牌，并根据 Q 值排序
         # hand_q_values = [(card, q_values[card]) for card in hand]
