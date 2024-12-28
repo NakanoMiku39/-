@@ -9,27 +9,29 @@ from itertools import combinations
 import matplotlib.pyplot as plt
 import gc
 from utils import Utils
-from ReplayMemory import ReplayMemory
+from ReplayMemory import ReplayMemory, SharedReplayMemory, QueueReplayMemory
 import torch.multiprocessing as mp
+from torch.multiprocessing import Queue, Manager
 import traceback
 
 # Hyperparameters
 NUM_AGENTS = 4
-NUM_CORES = 40  # 指定使用的 CPU 核心数量
+NUM_CORES = 1  # 指定使用的 CPU 核心数量
 GAMMA = 0.99
 LR = 1e-3
-BATCH_SIZE = 1000
+BATCH_SIZE = 2000
 MEMORY_SIZE = 10000
-HIGH_UPDATE = 50
-LOW_UPDATE = 1000
-TARGET_SAVE = 1000
-DEBUG_UPDATE = 200
-EPISODES = 400000
+HIGH_UPDATE = 20
+LOW_UPDATE = 2000
+TARGET_SAVE = 5000
+DEBUG_UPDATE = 1000
+EPISODES = 100000
 CLIP_EPSILON = 0.2  # 默认值
-ENTROPY_COEFF = 0.01  # 控制熵奖励权重
+ENTROPY_COEFF = 0.1  # 控制熵奖励权重
+MIN_ENTROPY_COEFF = 0.05
 N_STEP = 10
-EPSILON_START = 0.1
-EPSILON_MIN = 0.1
+EPSILON_START = 0.05
+EPSILON_MIN = 0.05
 RESET_INTERVAL = 1000000
 # DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEVICE = torch.device("cuda:0")
@@ -44,8 +46,6 @@ print(torch.cuda.current_device())  # 获取当前 GPU 设备编号
 print(torch.cuda.get_device_name(0))  # 查看 GPU 的名称（如果存在）
 print(torch.__version__)
 print(torch.version.cuda)
-
-global_memory = ReplayMemory(MEMORY_SIZE)  # 全局共享经验池
 
 # DQN Network
 class PPOPolicyNetwork(nn.Module):
@@ -85,24 +85,21 @@ class HierarchicalPPOAgent:
         self.high_level_optimizer = optim.Adam(self.high_level_net.parameters(), lr=LR)
         self.low_level_optimizer = optim.Adam(self.low_level_net.parameters(), lr=LR)
                
-        self.entropy_coeff_start = 0.1  # 熵权重初始值
-        self.entropy_coeff_end = 0.01  # 熵权重最终值
-        self.total_episodes = EPISODES  # 总训练轮数
-        
     def adjust_entropy_coeff(self, episode):
         """
         根据当前训练轮数动态调整熵奖励权重。
         """
-        decay_rate = (self.entropy_coeff_start - self.entropy_coeff_end) / self.total_episodes
-        entropy_coeff = max(self.entropy_coeff_end, self.entropy_coeff_start - decay_rate * episode)
+        # decay_rate = (self.entropy_coeff_start - self.entropy_coeff_end) / self.total_episodes
+        entropy_coeff = max(MIN_ENTROPY_COEFF,  ENTROPY_COEFF * (1 - episode / EPISODES))
         return entropy_coeff
     
-    def select_high_level_action(self, state):
+    def select_high_level_action(self, state, episode):
         state = state.to(DEVICE)
         with torch.no_grad():
             action_probs, _ = self.high_level_net(state)
             
-            # print(f"Probs: {action_probs}")
+            if episode % DEBUG_UPDATE == 0:
+                print(f"Probs: {action_probs}")
             # print(f"Prob_sum: {action_probs.sum()}")  # 确保等于1
 
 
@@ -265,17 +262,19 @@ class HierarchicalPPOAgent:
 
         # 更新高层和低层网络
         # 转换为张量
-        if episode % HIGH_UPDATE == 0:
-            high_states = torch.stack(states).to(DEVICE)
+        # if episode % HIGH_UPDATE == 0:
+        high_states = torch.stack(states).to(DEVICE)
+        for _ in range(50):
             self._update_high_level_network(self.high_level_net, self.high_level_optimizer, high_states, high_actions, high_rewards, high_log_probs, advantages, episode)
         
-        low_states = torch.FloatTensor(np.array(states)).to(DEVICE)
-        next_states = torch.FloatTensor(np.array(next_states)).to(DEVICE)
-        dones = torch.FloatTensor(dones).unsqueeze(1).to(DEVICE)
-        weights = torch.FloatTensor(np.array(weights)).to(DEVICE)
-        self._update_low_level_network(low_states, low_level_actions_one_hot, discounted_low_level_rewards, next_states, dones, indices, weights)
-        
         if episode % LOW_UPDATE == 0:
+            low_states = torch.FloatTensor(np.array(states)).to(DEVICE)
+            next_states = torch.FloatTensor(np.array(next_states)).to(DEVICE)
+            dones = torch.FloatTensor(dones).unsqueeze(1).to(DEVICE)
+            weights = torch.FloatTensor(np.array(weights)).to(DEVICE)
+            self._update_low_level_network(low_states, low_level_actions_one_hot, discounted_low_level_rewards, next_states, dones, indices, weights)
+        
+        if episode % TARGET_SAVE == 0:
             self.low_level_target_net.load_state_dict(self.low_level_net.state_dict())
 
 
@@ -310,16 +309,16 @@ def encode_obs(obs):
     return encoded
 
 # Training Loop
-def train(rank):
+def train(global_memory):
     try:
-        print(f"Process {rank} started")
+        # print(f"Process {rank} started")
 
         env = GuanDanEnv()
         input_dim = 324  # 手牌 + 上次出牌 + 历史出牌记录
         high_level_actions = 11
         low_level_actions = 108
 
-        agents = [HierarchicalPPOAgent(input_dim, high_level_actions, low_level_actions) for _ in range(NUM_AGENTS)]
+        agents = [HierarchicalPPOAgent(input_dim, high_level_actions, low_level_actions) for _ in range(2)]
         
         agent_metrics = [{'low_level_loss': [], 'high_level_loss': [], 'reward': [], 'low_level_q_value': [], 'high_level_q_value': []} for _ in range(NUM_AGENTS)]
         card_mapping = [utils.ChineseNum2Poker(i) for i in range(108)]
@@ -352,12 +351,12 @@ def train(rank):
                 
                 player_obs = obs[current_player]
                 state = torch.FloatTensor(encode_obs(player_obs)).to(DEVICE)
-                agent = agents[current_player]
+                agent = agents[current_player % 2]
                 high_reward = 0
                 low_reward = 0
 
                 # High-level action selection
-                high_action, high_log_prob = agent.select_high_level_action(state)
+                high_action, high_log_prob = agent.select_high_level_action(state, episode)
                 # 记录动作选取次数
                 high_level_action_picks[high_action] += 1
 
@@ -435,22 +434,31 @@ def train(rank):
                 )
 
             # Update agent policies
+            # if rank == 0:
             for agent in agents:
                 agent.update(global_memory, episode)
 
             if episode % TARGET_SAVE == 0:
+                # if rank == 0:
                 for i, agent in enumerate(agents):
                     torch.save(agent.high_level_net.state_dict(), f"{model_folder_path}/agent_{i}_high_level.pth")
                     torch.save(agent.low_level_net.state_dict(), f"{model_folder_path}/agent_{i}_low_level.pth")
-                    print(f"Model {i} Saved")
+                print(f"Models saved to shared memory at episode {episode}")
+                # else:
+                #     for i, agent in enumerate(agents):
+                        # shared_models[f"agent_{i}_high_level"] = agent.high_level_net.state_dict()
+                        # shared_models[f"agent_{i}_low_level"] = agent.low_level_net.state_dict()
+                    #     agent.high_level_net.load_state_dict(torch.load(f"{model_folder_path}/agent_{i}_high_level.pth", map_location=DEVICE))
+                    #     agent.low_level_net.load_state_dict(torch.load(f"{model_folder_path}/agent_{i}_low_level.pth", map_location=DEVICE))
+                    # print(f"Process {rank} loaded models from shared memory at episode {episode}")
 
             if episode % DEBUG_UPDATE == 0:
                 # print(f"Episode {episode}, Total Reward: {total_reward}")
                 print(f"Episode {episode}")
                 print(f"总计出现了 {', '.join([f'{high_level_action_space[i]}: {high_level_action_picks[i]}' for i in range(high_level_actions)])}")
                 print("---")
+                
         print(f"Results:\nTotal episodes: {EPISODES}\nSuccessful end game: {wins}")
-        
 
     except Exception as e:
         print(f"Error in process {rank}: {e}")
@@ -458,13 +466,22 @@ def train(rank):
         traceback.print_exc()
         
 if __name__ == "__main__":
-    mp.set_start_method('spawn')  # 设置启动方法
-    processes = []
-    for rank in range(NUM_CORES):
-        p = mp.Process(target=train, args=(rank,))
-        p.start()
-        processes.append(p)
-    for p in processes:
-        p.join()
+    # mp.set_start_method('spawn')  # 设置启动方法
+
+    # manager = Manager()
+    # shared_models = manager.dict()
+    # shared_memory = manager.list()
+    # shared_priorities = manager.list()
+    # global_memory = SharedReplayMemory(shared_memory, shared_priorities, MEMORY_SIZE)  # 全局共享经验池
+    global_memory = ReplayMemory(MEMORY_SIZE)
+    train(global_memory)
+    # processes = []
+    # for rank in range(NUM_CORES):
+    #     print(f"Bootstrap process {rank}")
+    #     p = mp.Process(target=train, args=(rank, shared_models, global_memory))
+    #     p.start()
+    #     processes.append(p)
+    # for p in processes:
+    #     p.join()
     
 
