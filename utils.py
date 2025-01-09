@@ -135,13 +135,19 @@ class Utils():
 
     # 三带二（夯）
     def get_legal_three_with_pair(self, hand):
+        # 获取所有合法的三同张组合
         triples = self.get_legal_triples(hand, True)
+        # 获取所有合法的不包含大小王的对子组合
         pairs = self.get_legal_pairs_without_jokers(hand)
         three_with_pair = []
+        
         for triple in triples:
+            triple_rank = self.get_card_rank(triple[0])  # 获取三同张的点数
             for pair in pairs:
-                if not set(triple) & set(pair):
+                pair_rank = self.get_card_rank(pair[0])  # 获取对子牌的点数
+                if triple_rank != pair_rank:  # 确保三同张和对子点数不同
                     three_with_pair.append(triple + pair)
+        
         return three_with_pair
 
     # 顺子（五张相连单牌）

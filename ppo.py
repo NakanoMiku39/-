@@ -364,9 +364,9 @@ def train(global_memory):
                 if high_action in range(high_level_actions - 1):
                     low_action = agent.select_low_level_action(state, player_obs['deck'], high_action)
                     if low_action:
-                        high_reward = len(low_action)
+                        high_reward = len(low_action) * 2
                     else:
-                        high_reward = -10
+                        high_reward = -20
                 # 过
                 else:
                     high_reward = -1
@@ -381,14 +381,14 @@ def train(global_memory):
                 done = env.done
                 
                 if env.game_state_info == f"Player {current_player}: ILLEGAL PASS AS FIRST-HAND":
-                    high_reward = -10
+                    high_reward = -20
                 elif env.game_state_info == f"Player {current_player}: POKERTYPE MISMATCH":
-                    high_reward = -5
+                    high_reward = -20
                 elif env.game_state_info == f"Player {current_player}: CANNOT BEAT LASTMOVE":
-                    high_reward = -3
-                    low_reward = -5
+                    high_reward = -10
+                    low_reward = -10
                 elif low_action: 
-                    low_reward = 3
+                    low_reward = len(low_action) * 2
                 
                 # Debug信息
                 if episode % DEBUG_UPDATE == 0:

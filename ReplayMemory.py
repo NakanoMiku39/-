@@ -24,7 +24,7 @@ class ReplayMemory:
         self.priorities = deque(maxlen=capacity)
         self.alpha = alpha
 
-    def push(self, state, action, reward, next_state, done):
+    def pushDQN(self, state, action, reward, next_state, done):
         max_priority = float(max(self.priorities, default=1.0))
         self.memory.append((state, action, reward, next_state, done))
         self.priorities.append(max_priority)

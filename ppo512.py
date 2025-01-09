@@ -18,13 +18,13 @@ import traceback
 NUM_AGENTS = 4
 NUM_CORES = 1  # 指定使用的 CPU 核心数量
 GAMMA = 0.99
-LR = 1e-3
-BATCH_SIZE = 2000
+LR = 1e-6
+BATCH_SIZE = 5000
 MEMORY_SIZE = 10000
 HIGH_UPDATE = 20
 LOW_UPDATE = 2000
 TARGET_SAVE = 5000
-DEBUG_UPDATE = 1000
+DEBUG_UPDATE = 1
 EPISODES = 100000
 CLIP_EPSILON = 0.2  # 默认值
 ENTROPY_COEFF = 0.1  # 控制熵奖励权重
@@ -49,19 +49,28 @@ print(torch.version.cuda)
 
 # DQN Network
 class PPOPolicyNetwork(nn.Module):
-    def __init__(self, input_dim, action_dim):
+    def __init__(self, input_dim, action_dim, dropout_rate=0.5):
         super(PPOPolicyNetwork, self).__init__()
         self.fc1 = nn.Linear(input_dim, 512)
+        self.dropout1 = nn.Dropout(p=dropout_rate)
         self.fc2 = nn.Linear(512, 256)
-        self.action_head = nn.Linear(256, action_dim)
-        self.value_head = nn.Linear(256, 1)
+        self.dropout2 = nn.Dropout(p=dropout_rate)
+        self.fc3 = nn.Linear(256, 128)
+        self.dropout3 = nn.Dropout(p=dropout_rate)
+        self.action_head = nn.Linear(128, action_dim)
+        self.value_head = nn.Linear(128, 1)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
+        x = self.dropout1(x)
         x = F.relu(self.fc2(x))
+        x = self.dropout2(x)
+        x = F.relu(self.fc3(x))
+        x = self.dropout3(x)
         action_logits = self.action_head(x)
         action_logits = torch.clamp(action_logits, min=-10, max=10)  # 裁剪 logits
         state_value = self.value_head(x)
+        state_value = torch.clamp(state_value, min=-1e10, max=1e10)
         return F.softmax(action_logits, dim=-1), state_value
 
 class LowLevelDQN(nn.Module):
@@ -178,7 +187,7 @@ class HierarchicalPPOAgent:
 
         # 对于高层动作，确保 actions 是二维张量
         actions = actions.long().unsqueeze(1)
-        log_probs = torch.log(action_probs.gather(1, actions))
+        log_probs = torch.log(action_probs.gather(1, actions) + 1e-10)
 
         # 计算比率和损失
         ratios = torch.exp(log_probs - old_log_probs)
@@ -188,27 +197,41 @@ class HierarchicalPPOAgent:
         # 动态调整熵权重
         entropy_coeff = self.adjust_entropy_coeff(episode)
         entropy_loss = -(action_probs * torch.log(action_probs + 1e-10)).sum(dim=1).mean()
+
+        # 总损失
+        loss = policy_loss + 0.5 * value_loss - entropy_coeff * entropy_loss
+        assert not torch.isnan(log_probs).any(), "log_probs contain NaN"
+        assert not torch.isnan(advantages).any(), "advantages contain NaN"
+        assert not torch.isinf(log_probs).any(), "log_probs contain Inf"
+        assert not torch.isinf(advantages).any(), "advantages contain Inf"
+
+
+        # 优化
+        optimizer.zero_grad()
+        loss.backward()
         
         
+        # 梯度裁剪
+        torch.nn.utils.clip_grad_norm_(policy_net.parameters(), max_norm=1.0)
+
+        # 检查和记录梯度分布
         if episode % DEBUG_UPDATE == 0:
             # print(f"action_probs: {action_probs}")
             print(f"Policy loss: {policy_loss.item()}")
             print(f"Value loss: {value_loss.item()}")
             print(f"Entropy loss: {entropy_loss.item()}")
 
-
-        # 总损失
-        loss = policy_loss + 0.5 * value_loss - entropy_coeff * entropy_loss
-
-        # 优化
-        optimizer.zero_grad()
-        loss.backward()
+            for name, param in policy_net.named_parameters():
+                if param.grad is not None:
+                    print(f"High-Level Layer: {name}, Gradient Mean: {param.grad.mean().item():.6f}, Gradient Std: {param.grad.std().item():.6f}")
+                
         optimizer.step()
         
     def _update_low_level_network(self, states, actions_one_hot, rewards, next_states, dones, indices, weights, n_step=N_STEP):
         q_values = (self.low_level_net(states) * actions_one_hot).sum(dim=1, keepdim=True)
         next_q_values = self.low_level_target_net(next_states).max(1)[0].unsqueeze(1)
         target_q_values = rewards + (GAMMA ** n_step) * next_q_values * (1 - dones)
+        target_q_values = torch.clamp(target_q_values, min=-10, max=10)
 
         loss = F.mse_loss(q_values, target_q_values)
         loss = (F.mse_loss(q_values, target_q_values, reduction='none') * weights).mean()
@@ -264,7 +287,7 @@ class HierarchicalPPOAgent:
         # 转换为张量
         # if episode % HIGH_UPDATE == 0:
         high_states = torch.stack(states).to(DEVICE)
-        for _ in range(50):
+        for _ in range(10):
             self._update_high_level_network(self.high_level_net, self.high_level_optimizer, high_states, high_actions, high_rewards, high_log_probs, advantages, episode)
         
         if episode % LOW_UPDATE == 0:
@@ -341,6 +364,7 @@ def train(global_memory):
             obs = env.reset()
             current_player = 0
             done = False
+            random.shuffle(agents) # 随机排列每个智能体
             agent_metrics = [{'low_level_loss': [], 'high_level_loss': [], 'reward': [], 'low_level_q_value': [], 'high_level_q_value': []} for _ in range(NUM_AGENTS)]
 
             while not done:
